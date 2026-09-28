@@ -1,0 +1,100 @@
+services:
+
+  # ---------- infraestructura ----------
+
+  redis:
+    image: redis:7.0-alpine
+    container_name: redis
+    networks:
+      - app-net
+
+  zipkin:
+    image: openzipkin/zipkin:2
+    container_name: zipkin
+    ports:
+      - "9411:9411"
+    networks:
+      - app-net
+
+  # ---------- microservicios ----------
+
+  users-api:
+    build: ./users-api
+    container_name: users-api
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-PRFT}
+      SERVER_PORT: 8083
+      SPRING_ZIPKIN_BASEURL: http://zipkin:9411/
+    ports:
+      - "8083:8083"   # expuesto solo para poder probar con curl
+    depends_on:
+      - zipkin
+    networks:
+      - app-net
+
+  auth-api:
+    build: ./auth-api
+    container_name: auth-api
+    environment:
+      AUTH_API_PORT: 8000
+      USERS_API_ADDRESS: http://users-api:8083
+      JWT_SECRET: ${JWT_SECRET:-PRFT}
+      ZIPKIN_URL: http://zipkin:9411/api/v2/spans
+    ports:
+      - "8000:8000"
+    depends_on:
+      - users-api
+    networks:
+      - app-net
+
+  todos-api:
+    build: ./todos-api
+    container_name: todos-api
+    environment:
+      TODO_API_PORT: 8082
+      JWT_SECRET: ${JWT_SECRET:-PRFT}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_CHANNEL: log_channel
+      ZIPKIN_URL: http://zipkin:9411/api/v2/spans
+    ports:
+      - "8082:8082"
+    depends_on:
+      - redis
+    networks:
+      - app-net
+
+  log-message-processor:
+    build: ./log-message-processor
+    container_name: log-message-processor
+    restart: on-failure   # si redis aun no acepta conexiones, reintenta
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_CHANNEL: log_channel
+      # py_zipkin envia thrift -> endpoint v1, no v2
+      ZIPKIN_URL: http://zipkin:9411/api/v1/spans
+    depends_on:
+      - redis
+    networks:
+      - app-net
+
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    environment:
+      PORT: 8080
+      AUTH_API_ADDRESS: http://auth-api:8000
+      TODOS_API_ADDRESS: http://todos-api:8082
+      ZIPKIN_URL: http://zipkin:9411/api/v2/spans
+    ports:
+      - "8080:8080"
+    depends_on:
+      - auth-api
+      - todos-api
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    driver: bridge
